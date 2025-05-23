@@ -1,10 +1,11 @@
 pipeline {
     agent any
 
-    // Parameters will be added via Jenkins UI "This project is parameterized"
-    // Add these parameters in Jenkins UI:
-    // 1. Choice Parameter: name='ENVIRONMENT', choices='dev\nprod', description='Select deployment environment'
-    // 2. Boolean Parameter: name='SKIP_TESTS', default=false, description='Skip running tests'
+    // Add parameters to allow Build with Parameters option in Jenkins UI
+    parameters {
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'prod'], description: 'Select deployment environment')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip running tests')
+    }
     
     environment {
         DOCKER_REGISTRY = 'shybash'  // Replace with your Docker Hub username
@@ -47,17 +48,20 @@ pipeline {
             }
         }
         
-        // stage('🧪 Unit Tests') {
-        //     steps {
-        //         echo 'Running unit tests...'
-        //         sh '''
-        //             cd app
-        //             coverage run -m pytest tests/ -v
-        //             coverage report
-        //             coverage xml
-        //         '''
-        //     }
-        // }
+        stage('🧪 Unit Tests') {
+            when {
+                expression { return !params.SKIP_TESTS }
+            }
+            steps {
+                echo 'Running unit tests...'
+                sh '''
+                    cd app
+                    coverage run -m pytest tests/ -v
+                    coverage report
+                    coverage xml
+                '''
+            }
+        }
         
         stage('🔍 SonarQube Analysis') {
             steps {
@@ -72,7 +76,6 @@ pipeline {
                 }
             }
         }
-
         
         stage('🚪 Quality Gate') {
             steps {
@@ -86,7 +89,6 @@ pipeline {
                 }
             }
         }
-
         
         stage('🐳 Docker Build') {
             steps {
@@ -151,37 +153,34 @@ pipeline {
         
         stage('🚀 Deploy to Environment') {
             steps {
-                echo "Deploying to ${env.ENVIRONMENT} environment..."
+                echo "Deploying to ${params.ENVIRONMENT} environment..."
                 script {
-                    def targetHost = env.ENVIRONMENT == 'prod' ? env.PROD_EC2_HOST : env.DEV_EC2_HOST
+                    def targetHost = params.ENVIRONMENT == 'prod' ? env.PROD_EC2_HOST : env.DEV_EC2_HOST
                     
                     withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key', 
                                                        keyFileVariable: 'SSH_KEY')]) {
                         sh """
                             echo "Deploying to host: ${targetHost}"
                             
-                            # Set correct permissions for SSH key
                             chmod 600 \$SSH_KEY
                             
-                            # Copy Docker Compose file to target server
                             scp -i \$SSH_KEY -o StrictHostKeyChecking=no \
-                                deploy/${env.ENVIRONMENT}/docker-compose.${env.ENVIRONMENT}.yml \
+                                deploy/${params.ENVIRONMENT}/docker-compose.${params.ENVIRONMENT}.yml \
                                 ec2-user@${targetHost}:/home/ec2-user/
                             
-                            # Deploy the application
                             ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ec2-user@${targetHost} '
                                 export DOCKER_REGISTRY=${DOCKER_REGISTRY}
                                 export IMAGE_NAME=${IMAGE_NAME}
                                 export BUILD_NUMBER=${BUILD_NUMBER}
                                 
                                 echo "Stopping existing containers..."
-                                docker-compose -f docker-compose.${ENVIRONMENT}.yml down || true
+                                docker-compose -f docker-compose.${params.ENVIRONMENT}.yml down || true
                                 
                                 echo "Pulling latest images..."
-                                docker-compose -f docker-compose.${ENVIRONMENT}.yml pull
+                                docker-compose -f docker-compose.${params.ENVIRONMENT}.yml pull
                                 
                                 echo "Starting new containers..."
-                                docker-compose -f docker-compose.${ENVIRONMENT}.yml up -d
+                                docker-compose -f docker-compose.${params.ENVIRONMENT}.yml up -d
                                 
                                 echo "Cleaning up old images..."
                                 docker system prune -f
@@ -198,8 +197,8 @@ pipeline {
             steps {
                 echo 'Performing health check...'
                 script {
-                    def targetHost = env.ENVIRONMENT == 'prod' ? env.PROD_EC2_HOST : env.DEV_EC2_HOST
-                    def port = env.ENVIRONMENT == 'prod' ? '80' : '8000'
+                    def targetHost = params.ENVIRONMENT == 'prod' ? env.PROD_EC2_HOST : env.DEV_EC2_HOST
+                    def port = params.ENVIRONMENT == 'prod' ? '80' : '8000'
                     
                     sh """
                         echo "Waiting for application to start..."
@@ -230,10 +229,10 @@ pipeline {
         }
         success {
             echo "✅ Pipeline completed successfully!"
-            echo "🌐 Application deployed to ${env.ENVIRONMENT} environment"
+            echo "🌐 Application deployed to ${params.ENVIRONMENT} environment"
             script {
-                def targetHost = env.ENVIRONMENT == 'prod' ? env.PROD_EC2_HOST : env.DEV_EC2_HOST
-                def port = env.ENVIRONMENT == 'prod' ? '80' : '8000'
+                def targetHost = params.ENVIRONMENT == 'prod' ? env.PROD_EC2_HOST : env.DEV_EC2_HOST
+                def port = params.ENVIRONMENT == 'prod' ? '80' : '8000'
                 echo "🔗 Access your application at: http://${targetHost}:${port}"
             }
         }
